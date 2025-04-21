@@ -1,0 +1,185 @@
+#property copyright "Your Name"
+#property link      "https://www.example.com"
+#property version   "1.00"
+
+#include <Trade\Trade.mqh>
+
+// Tham số đầu vào
+input double LotSize = 0.01; // Kích thước lot (khớp với yêu cầu)
+input string SignalFile = "signals.txt"; // Đường dẫn tới signals.txt
+
+// Biến toàn cục
+CTrade trade;
+string last_line = "";
+
+// Hàm lấy chế độ điền lệnh phù hợp
+ENUM_ORDER_TYPE_FILLING GetFillingMode(string symbol)
+{
+   long filling = SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
+   if((filling & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+      return ORDER_FILLING_FOK;
+   else if((filling & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
+      return ORDER_FILLING_IOC;
+   else
+      return ORDER_FILLING_RETURN;
+}
+
+// Hàm khởi tạo EA
+int OnInit()
+{
+   // Kiểm tra file tín hiệu
+   if(!FileIsExist(SignalFile))
+   {
+      Print("File tín hiệu không tồn tại: ", SignalFile, ". Tạo file mới...");
+      int file_handle = FileOpen(SignalFile, FILE_WRITE | FILE_TXT);
+      if(file_handle != INVALID_HANDLE)
+      {
+         FileClose(file_handle);
+         Print("Đã tạo file tín hiệu: ", SignalFile);
+      }
+      else
+      {
+         int error_code = GetLastError();
+         Print("Không thể tạo file tín hiệu: ", SignalFile, ", Lỗi: ", error_code);
+         return(INIT_FAILED);
+      }
+   }
+   else
+   {
+      Print("File tín hiệu đã tồn tại: ", SignalFile);
+   }
+
+   // Kiểm tra symbol
+   if(!SymbolInfoDouble(Symbol(), SYMBOL_ASK))
+   {
+      Print("Symbol không hợp lệ hoặc không có giá: ", Symbol());
+      return(INIT_FAILED);
+   }
+
+   return(INIT_SUCCEEDED);
+}
+
+// Hàm xử lý mỗi tick
+void OnTick()
+{
+   // Kiểm tra giao dịch có được phép không
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
+   {
+      Print("Giao dịch không được phép. Vui lòng bật AutoTrading.");
+      return;
+   }
+
+   // Kiểm tra kết nối với máy chủ
+   if(!TerminalInfoInteger(TERMINAL_CONNECTED))
+   {
+      Print("Không có kết nối với máy chủ. Vui lòng kiểm tra internet.");
+      return;
+   }
+
+   // Mở file để đọc
+   int file_handle = FileOpen(SignalFile, FILE_READ | FILE_TXT | FILE_ANSI | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   if(file_handle == INVALID_HANDLE)
+   {
+      Print("Không mở được file: ", SignalFile, ", Lỗi: ", GetLastError());
+      return;
+   }
+   Print("Đã mở file: ", SignalFile);
+
+   // Đọc dòng cuối cùng của file
+   string current_line = "";
+   while(!FileIsEnding(file_handle))
+   {
+      current_line = FileReadString(file_handle);
+   }
+   FileClose(file_handle);
+
+   // Kiểm tra xem dòng cuối cùng có thay đổi không
+   if(current_line == last_line)
+   {
+      Print("Không có thay đổi trong file.");
+      return;
+   }
+
+   // Cập nhật dòng cuối cùng đã xử lý
+   last_line = current_line;
+   Print("Đọc dòng mới: ", current_line);
+
+   // Phân tích các trường trong dòng
+   string fields[];
+   int split_count = StringSplit(current_line, ',', fields);
+   if(split_count != 4)
+   {
+      Print("Định dạng không hợp lệ: Số trường = ", split_count);
+      return;
+   }
+
+   string action = fields[0];
+   string symbol = fields[1];
+   double price = StringToDouble(fields[2]);
+   double timestamp = StringToDouble(fields[3]);
+
+   // Kiểm tra symbol (chấp nhận symbol không có hậu tố)
+   string chart_symbol = Symbol();
+   string base_symbol = StringSubstr(chart_symbol, 0, 6); // Lấy 6 ký tự đầu (EURUSD)
+   if(symbol != base_symbol)
+   {
+      Print("Symbol không khớp: ", symbol, " != ", base_symbol, " (chart symbol: ", chart_symbol, ")");
+      return;
+   }
+
+   // Thực hiện hành động giao dịch
+   if(action == "buy" || action == "sell")
+   {
+      MqlTradeRequest request = {};
+      MqlTradeResult result = {};
+
+      request.action = TRADE_ACTION_DEAL;
+      request.symbol = chart_symbol;
+      request.volume = LotSize;
+      request.type = (action == "buy") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      request.price = (action == "buy") ? SymbolInfoDouble(chart_symbol, SYMBOL_ASK) : SymbolInfoDouble(chart_symbol, SYMBOL_BID);
+      request.sl = 0;
+      request.tp = 0;
+      request.type_filling = GetFillingMode(chart_symbol); // Chọn chế độ điền lệnh phù hợp
+      request.deviation = 10;
+      request.magic = 12345;
+      request.comment = "EA Trade";
+
+      Print("Gửi lệnh: ", action, ", Volume: ", LotSize, ", Filling mode: ", EnumToString(request.type_filling));
+
+      if(!OrderSend(request, result))
+      {
+         Print("OrderSend thất bại: Retcode = ", result.retcode, ", Lỗi = ", GetLastError());
+         Print("Mô tả lỗi: ", GetTradeErrorDescription(result.retcode));
+      }
+      else
+      {
+         Print("Mở lệnh thành công: ", action, ", Ticket: ", result.order);
+      }
+   }
+   else
+   {
+      Print("Hành động không hợp lệ: ", action);
+   }
+}
+
+// Hàm lấy mô tả lỗi giao dịch
+string GetTradeErrorDescription(int error_code)
+{
+   switch(error_code)
+   {
+      case 10004: return "Requote";
+      case 10006: return "Yêu cầu bị từ chối";
+      case 10007: return "Yêu cầu bị hủy bởi trader";
+      case 10013: return "Giao dịch bị vô hiệu hóa";
+      case 10014: return "Khối lượng không hợp lệ";
+      case 10015: return "Giá không hợp lệ";
+      case 10017: return "Giao dịch bị tắt";
+      case 10018: return "Thị trường đóng cửa";
+      case 10019: return "Không đủ tiền";
+      case 10026: return "Giao dịch tự động bị tắt bởi máy chủ";
+      case 10027: return "Giao dịch tự động bị tắt bởi terminal";
+      case 10031: return "Không kết nối với máy chủ giao dịch";
+      default: return "Lỗi không xác định";
+   }
+}
