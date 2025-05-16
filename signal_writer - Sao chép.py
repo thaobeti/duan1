@@ -1,0 +1,93 @@
+import imaplib
+import email
+import time
+import os
+from datetime import datetime
+
+GMAIL_USER = "thaogucci123@gmail.com"
+GMAIL_PASSWORD = "crhm isws vmom vqfs"
+IMAP_SERVER = "imap.gmail.com"
+SIGNAL_FILE = r"C:\Users\DELL\AppData\Roaming\MetaQuotes\Terminal\2191F4A3D14D7B4B1EBB84F924777883\MQL4\Files\signals.txt"
+
+def extract_signal(text):
+    """Trích xuất và chuẩn hóa tín hiệu từ nội dung email."""
+    text_upper = text.upper()
+    valid_signals = ["EXIT BUY", "EXIT SELL", "BUY", "SELL"]
+    for signal in valid_signals:
+        if signal in text_upper:
+            return signal
+    return None
+
+def parse_signal_from_body(body):
+    print(f"Đang phân tích nội dung email: {body}")
+    parts = [p.strip() for p in body.replace("\n", "").split(",")]
+    if len(parts) == 4:
+        return ",".join(parts)
+    action = extract_signal(body)
+    if not action:
+        return None
+    symbol = "XAUUSD"
+    price = "0"
+    timestamp = str(int(time.time()))
+    return f"{action},{symbol},{price},{timestamp}"
+
+def extract_signal_from_email():
+    try:
+        print("Đang kết nối tới Gmail...")
+        mail = imaplib.IMAP4_SSL(IMAP_SERVER)
+        mail.login(GMAIL_USER, GMAIL_PASSWORD)
+        mail.select("inbox")
+
+        print("Đang tìm email chưa đọc...")
+        status, messages = mail.search(None, '(UNSEEN FROM "noreply@tradingview.com")')
+        print(f"Kết quả tìm kiếm email: {status}, {messages}")
+
+        if status != "OK" or not messages[0]:
+            print("Không có email mới từ TradingView.")
+            return None
+
+        signal_line = None
+        for email_id in messages[0].split():
+            status, msg_data = mail.fetch(email_id, "(RFC822)")
+            email_message = email.message_from_bytes(msg_data[0][1])
+            if email_message.is_multipart():
+                for part in email_message.walk():
+                    if part.get_content_type() == "text/plain":
+                        body = part.get_payload(decode=True).decode('utf-8', errors='ignore').strip()
+                        print(f"Nội dung email: {body}")
+                        signal_line = parse_signal_from_body(body)
+                        break
+            else:
+                body = email_message.get_payload(decode=True).decode('utf-8', errors='ignore').strip()
+                print(f"Nội dung email: {body}")
+                signal_line = parse_signal_from_body(body)
+
+            mail.store(email_id, "+FLAGS", "\\Seen")
+            if signal_line:
+                break
+
+        mail.logout()
+        return signal_line
+
+    except Exception as e:
+        print(f"Lỗi khi kiểm tra email: {e}")
+        return None
+
+def main():
+    while True:
+        print("Đang kiểm tra email...")
+        signal_line = extract_signal_from_email()
+        if signal_line:
+            print(f"Tín hiệu nhận được: {signal_line}")
+            with open(SIGNAL_FILE, "w", encoding='utf-8') as file:
+                file.write(signal_line)
+            print(f"Tín hiệu '{signal_line}' đã được ghi vào file.")
+        else:
+            print("Không có tín hiệu nào.")
+        time.sleep(0.3)
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as e:
+        print(f"Chương trình gặp lỗi: {e}")
