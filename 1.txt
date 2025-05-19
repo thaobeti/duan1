@@ -1,12 +1,17 @@
-#property copyright "Your Name"
-#property link      "https://www.example.com"
-#property version   "1.00"
+//+------------------------------------------------------------------+
+//|                                                    SignalEA.mq4  |
+//|                 EA nhận tín hiệu từ file signals.txt             |
+//+------------------------------------------------------------------+
+#property copyright "thaobeti"
+#property link      "https://github.com/thaobeti/duan1"
+#property version   "1.10"
 #property strict
 
-extern double LotSize = 0.01;
-extern string SignalFile = "signals.txt";
+extern double LotSize      = 0.01;
+extern string SignalFile   = "signals.txt";
+extern int    MagicNumber  = 12345;
 
-string last_line = "";
+string last_signal = "";
 
 // Hàm xóa khoảng trắng đầu/cuối
 string StringTrim(string s) {
@@ -29,12 +34,18 @@ string myStringToLower(string s) {
     return s;
 }
 
-// Hàm kiểm tra lệnh đang mở
+// So khớp symbol (dùng cho trường hợp broker có hậu tố, ví dụ XAUUSDm)
+bool IsSymbolMatch(string s1, string s2) {
+    int len = StringLen(s1);
+    return (StringSubstr(s2, 0, len) == s1);
+}
+
+// Lấy lệnh hiện tại của EA trên symbol này (nếu có)
 bool GetCurrentPosition(int& ticket, int& order_type) {
     int total = OrdersTotal();
     for(int i=0; i<total; i++) {
         if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) {
-            if(OrderSymbol() == Symbol() && OrderMagicNumber() == 12345) {
+            if(OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber) {
                 ticket = OrderTicket();
                 order_type = OrderType();
                 return(true);
@@ -44,24 +55,30 @@ bool GetCurrentPosition(int& ticket, int& order_type) {
     return(false);
 }
 
+// Hàm chính xử lý tín hiệu
 int start() {
     string current_line = "";
     int file_handle = FileOpen(SignalFile, FILE_CSV|FILE_READ, ';');
-    if(file_handle < 0) return(0);
+    if(file_handle < 0) {
+        Print("Không mở được file: ", SignalFile, " - Error: ", GetLastError());
+        return(0);
+    }
 
+    // Đọc dòng cuối cùng trong file
     while(!FileIsEnding(file_handle))
         current_line = FileReadString(file_handle);
-
     FileClose(file_handle);
 
-    if(current_line == last_line || current_line == "")
-        return(0);
+    if(current_line == last_signal || current_line == "") return(0);
 
-    last_line = current_line;
+    last_signal = current_line;
 
     string fields[4];
     int split_count = StringSplit(current_line, ',', fields);
-    if(split_count != 4) return(0);
+    if(split_count != 4) {
+        Print("Tín hiệu không đúng định dạng: ", current_line);
+        return(0);
+    }
 
     string action = StringTrim(fields[0]);
     string signal_symbol = StringTrim(fields[1]);
@@ -69,36 +86,40 @@ int start() {
     double timestamp = StrToDouble(fields[3]);
     action = myStringToLower(action);
 
-    if(signal_symbol != "" && signal_symbol != Symbol()) return(0);
+    // Kiểm tra symbol (cho phép để trống để vào mọi symbol)
+    if(signal_symbol != "" && !IsSymbolMatch(signal_symbol, Symbol())) {
+        Print("Tín hiệu cho symbol khác: ", signal_symbol, ", EA đang chạy trên: ", Symbol());
+        return(0);
+    }
 
     int ticket = -1;
     int order_type = -1;
     bool has_order = GetCurrentPosition(ticket, order_type);
 
     if(action == "buy") {
-        // Nếu đang có SELL thì đóng trước
         if(has_order && order_type == OP_SELL) {
             bool closed = OrderClose(ticket, OrderLots(), Ask, 10, clrRed);
             if(!closed) Print("Đóng lệnh SELL lỗi: ", GetLastError());
+            else Print("Đã đóng lệnh SELL, ticket: ", ticket);
+            Sleep(1000); // Chờ lệnh đóng được ghi nhận
         }
-        // Nếu chưa có BUY thì vào BUY
         if(!has_order || order_type != OP_BUY) {
-            double buy_price = price > 0 ? price : Ask;
-            int buy_ticket = OrderSend(Symbol(), OP_BUY, LotSize, buy_price, 10, 0, 0, "EA Signal", 12345, 0, clrBlue);
+            double buy_price = (price > 0) ? price : Ask;
+            int buy_ticket = OrderSend(Symbol(), OP_BUY, LotSize, buy_price, 10, 0, 0, "EA Signal", MagicNumber, 0, clrBlue);
             if(buy_ticket < 0) Print("OrderSend BUY lỗi: ", GetLastError());
             else Print("Mở lệnh BUY thành công, ticket: ", buy_ticket);
         }
     }
     else if(action == "sell") {
-        // Nếu đang có BUY thì đóng trước
         if(has_order && order_type == OP_BUY) {
             bool closed = OrderClose(ticket, OrderLots(), Bid, 10, clrBlue);
             if(!closed) Print("Đóng lệnh BUY lỗi: ", GetLastError());
+            else Print("Đã đóng lệnh BUY, ticket: ", ticket);
+            Sleep(1000); // Chờ lệnh đóng được ghi nhận
         }
-        // Nếu chưa có SELL thì vào SELL
         if(!has_order || order_type != OP_SELL) {
-            double sell_price = price > 0 ? price : Bid;
-            int sell_ticket = OrderSend(Symbol(), OP_SELL, LotSize, sell_price, 10, 0, 0, "EA Signal", 12345, 0, clrRed);
+            double sell_price = (price > 0) ? price : Bid;
+            int sell_ticket = OrderSend(Symbol(), OP_SELL, LotSize, sell_price, 10, 0, 0, "EA Signal", MagicNumber, 0, clrRed);
             if(sell_ticket < 0) Print("OrderSend SELL lỗi: ", GetLastError());
             else Print("Mở lệnh SELL thành công, ticket: ", sell_ticket);
         }
@@ -116,6 +137,9 @@ int start() {
             if(!closed) Print("Đóng lệnh SELL lỗi: ", GetLastError());
             else Print("Đã đóng lệnh SELL, ticket: ", ticket);
         }
+    }
+    else {
+        Print("Tín hiệu không hợp lệ: ", action);
     }
 
     return(0);
