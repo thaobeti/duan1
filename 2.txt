@@ -1,70 +1,253 @@
-import imaplib
-import email
-import time
-import os
+//+------------------------------------------------------------------+
+//|                                            FVG Trading EA        |
+//|                                       Copyright 2024, Hieu Hoang |
+//+------------------------------------------------------------------+
+#property copyright "Copyright 2024, hieuhoangcntt@gmail.com"
+#property link      "hieuhoangcntt@gmail.com"
+#property version   "1.00"
+#property strict
 
-# Cấu hình Gmail
-GMAIL_USER = "thaogucci123@gmail.com"
-GMAIL_PASSWORD = "crhm isws vmom vqfs"  # Sử dụng App Password nếu dùng Gmail
-IMAP_SERVER = "imap.gmail.com"
-SIGNAL_FILE = "C:\\Users\\DELL\\AppData\\Roaming\\MetaQuotes\\Terminal\\53785E099C927DB68A545C249CDBCE06\\MQL5\\Files\\signals.txt"
+//--- Input parameters
+input double LotSize = 0.01; // Kích thước lot giao dịch
+input double SpreadAdjustment = 1.2; // Hệ số giãn spread
 
-def extract_signal_from_email():
-    try:
-        mail = imaplib.IMAP4_SSL(IMAP_SERVER)
-        mail.login(GMAIL_USER, GMAIL_PASSWORD)
-        mail.select("inbox")
+//--- Global variables
+string fvgZones[]; // Mảng lưu tên các vùng FVG đã giao dịch
 
-        # Chỉ tìm email chưa đọc từ TradingView
-        status, messages = mail.search(None, '(UNSEEN FROM "noreply@tradingview.com")')
-        if status != "OK" or not messages[0]:
-            print("Không có email mới từ TradingView")
-            return None
+//+------------------------------------------------------------------+
+//| Expert initialization function                                     |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   ArrayResize(fvgZones, 0);
+   Print("EA initialized. fvgZones size: ", ArraySize(fvgZones));
+   return(INIT_SUCCEEDED);
+}
 
-        message_ids = messages[0].split()
-        latest_email_id = message_ids[-1]  # Lấy email mới nhất
-        status, msg_data = mail.fetch(latest_email_id, "(RFC822)")
-        email_message = email.message_from_bytes(msg_data[0][1])
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                   |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   ArrayFree(fvgZones);
+   Print("EA deinitialized.");
+}
 
-        # Trích xuất nội dung email
-        signal = None
-        if email_message.is_multipart():
-            for part in email_message.walk():
-                if part.get_content_type() == "text/plain":
-                    body = part.get_payload(decode=True).decode('utf-8', errors='ignore').strip()
-                    signal = extract_signal(body)
-                    break
-        else:
-            body = email_message.get_payload(decode=True).decode('utf-8', errors='ignore').strip()
-            signal = extract_signal(body)
+//+------------------------------------------------------------------+
+//| Expert tick function                                               |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double spread = (ask - bid) / _Point;
 
-        # Đánh dấu email là đã đọc để không xử lý lại
-        mail.store(latest_email_id, "+FLAGS", "\\Seen")
-        mail.logout()
+   // Kiểm tra và đóng lệnh trước
+   CheckTakeProfit(bid, ask, spread);
 
-        return signal
+   // Duyệt qua các vùng FVG
+   for(int i = ObjectsTotal(0, 0, OBJ_RECTANGLE) - 1; i >= 0; i--)
+   {
+      string objName = ObjectName(0, i);
+      if(StringFind(objName, "Buy range") >= 0 || StringFind(objName, "Sell range") >= 0)
+      {
+         double priceLow = ObjectGetDouble(0, objName, OBJPROP_PRICE, 0);
+         double priceHigh = ObjectGetDouble(0, objName, OBJPROP_PRICE, 1);
+         color objColor = (color)ObjectGetInteger(0, objName, OBJPROP_COLOR);
 
-    except Exception as e:
-        print(f"Lỗi khi kiểm tra email: {e}")
-        return None
+         Print("Checking zone: ", objName, " | Low: ", priceLow, " | High: ", priceHigh, " | Bid: ", bid, " | Ask: ", ask);
 
-def extract_signal(text):
-    """Trích xuất tín hiệu từ nội dung email."""
-    text_upper = text.upper()
-    valid_signals = ["BUY", "SELL", "EXIT BUY", "EXIT SELL"]
-    for signal in valid_signals:
-        if signal in text_upper:
-            return signal
-    return None
+         // Chỉ giao dịch nếu vùng chưa được giao dịch trước đó
+         if(!IsZoneTraded(objName))
+         {
+            if(objColor == clrBlue && bid >= priceLow && bid <= priceHigh)
+            {
+               Print("Buy condition met for zone: ", objName);
+               OpenBuyOrder(objName, priceLow, priceHigh, spread);
+            }
+            else if(objColor == clrRed && ask <= priceHigh && ask >= priceLow)
+            {
+               Print("Sell condition met for zone: ", objName);
+               OpenSellOrder(objName, priceLow, priceHigh, spread);
+            }
+            else
+            {
+               Print("No trade condition met for zone: ", objName, " | Bid: ", bid, " | Ask: ", ask);
+            }
+         }
+         else
+         {
+            Print("Zone already traded, skipping: ", objName);
+         }
+      }
+   }
+}
 
-def main():
-    while True:
-        signal = extract_signal_from_email()
-        if signal:
-            with open(SIGNAL_FILE, "w", encoding='utf-8') as file:
-                file.write(signal)
-            print(f"Tín hiệu '{signal}' đã được ghi vào {SIGNAL_FILE}")
-        time.sleep(1)  # Kiểm tra mỗi 60 giây
+//+------------------------------------------------------------------+
+//| Kiểm tra xem vùng đã giao dịch chưa                                |
+//+------------------------------------------------------------------+
+bool IsZoneTraded(string zoneName)
+{
+   for(int i = 0; i < ArraySize(fvgZones); i++)
+   {
+      if(fvgZones[i] == zoneName) return true;
+   }
+   return false;
+}
 
-if __name__ == '__main__':
-    main()
+//+------------------------------------------------------------------+
+//| Mở lệnh Buy                                                       |
+//+------------------------------------------------------------------+
+void OpenBuyOrder(string zoneName, double slPrice, double zoneHigh, double spread)
+{
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double sl = slPrice - (10 * _Point + spread * SpreadAdjustment * _Point);
+   double tp = 0;
+
+   MqlTradeRequest request;
+   MqlTradeResult result;
+   ZeroMemory(request);
+   ZeroMemory(result);
+
+   request.action = TRADE_ACTION_DEAL;
+   request.symbol = _Symbol;
+   request.volume = LotSize;
+   request.type = ORDER_TYPE_BUY;
+   request.price = ask;
+   request.sl = sl;
+   request.tp = tp;
+   request.comment = zoneName;
+   request.magic = 0;
+
+   if(!OrderSend(request, result))
+      Print("Error opening Buy order: ", GetLastError());
+   else
+   {
+      ArrayResize(fvgZones, ArraySize(fvgZones) + 1);
+      fvgZones[ArraySize(fvgZones) - 1] = zoneName;
+      Print("Opened Buy order for zone: ", zoneName, " | Ticket: ", result.order);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Mở lệnh Sell                                                      |
+//+------------------------------------------------------------------+
+void OpenSellOrder(string zoneName, double zoneLow, double slPrice, double spread)
+{
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double adjustedSpread = spread * SpreadAdjustment * _Point;
+   double sl = slPrice + (10 * _Point + adjustedSpread);
+   double tp = 0;
+
+   MqlTradeRequest request;
+   MqlTradeResult result;
+   ZeroMemory(request);
+   ZeroMemory(result);
+
+   request.action = TRADE_ACTION_DEAL;
+   request.symbol = _Symbol;
+   request.volume = LotSize;
+   request.type = ORDER_TYPE_SELL;
+   request.price = bid;
+   request.sl = sl;
+   request.tp = tp;
+   request.comment = zoneName;
+   request.magic = 0;
+
+   if(!OrderSend(request, result))
+      Print("Error opening Sell order: ", GetLastError());
+   else
+   {
+      ArrayResize(fvgZones, ArraySize(fvgZones) + 1);
+      fvgZones[ArraySize(fvgZones) - 1] = zoneName;
+      Print("Opened Sell order for zone: ", zoneName, " | Ticket: ", result.order);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Kiểm tra và đóng lệnh khi chạm vùng ngược lại                     |
+//+------------------------------------------------------------------+
+void CheckTakeProfit(double bid, double ask, double spread)
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(PositionSelectByTicket(PositionGetTicket(i)) && PositionGetString(POSITION_SYMBOL) == _Symbol)
+      {
+         ulong ticket = PositionGetTicket(i);
+         string positionComment = PositionGetString(POSITION_COMMENT);
+
+         if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
+         {
+            for(int j = ObjectsTotal(0, 0, OBJ_RECTANGLE) - 1; j >= 0; j--)
+            {
+               string objName = ObjectName(0, j);
+               if(StringFind(objName, "Buy range") >= 0)
+               {
+                  double priceLow = ObjectGetDouble(0, objName, OBJPROP_PRICE, 0);
+                  double priceHigh = ObjectGetDouble(0, objName, OBJPROP_PRICE, 1);
+                  if(ask <= priceHigh && ask >= priceLow)
+                  {
+                     CTrade trade;
+                     if(trade.PositionClose(ticket))
+                     {
+                        Print("Closed Sell order at Buy range TP: ", objName, " | Ticket: ", ticket);
+                        // Không xóa vùng Sell khỏi fvgZones
+
+                        if(bid >= priceLow && bid <= priceHigh && !IsZoneTraded(objName))
+                        {
+                           Print("Buy condition met after closing Sell for zone: ", objName);
+                           OpenBuyOrder(objName, priceLow, priceHigh, spread);
+                        }
+                        else
+                           Print("Buy condition NOT met after closing Sell | Bid: ", bid, " | Zone Low: ", priceLow, " | Zone High: ", priceHigh);
+                     }
+                     break;
+                  }
+               }
+            }
+         }
+         else if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+         {
+            for(int j = ObjectsTotal(0, 0, OBJ_RECTANGLE) - 1; j >= 0; j--)
+            {
+               string objName = ObjectName(0, j);
+               if(StringFind(objName, "Sell range") >= 0)
+               {
+                  double priceLow = ObjectGetDouble(0, objName, OBJPROP_PRICE, 0);
+                  double priceHigh = ObjectGetDouble(0, objName, OBJPROP_PRICE, 1);
+                  if(bid >= priceLow && bid <= priceHigh)
+                  {
+                     CTrade trade;
+                     if(trade.PositionClose(ticket))
+                     {
+                        Print("Closed Buy order at Sell range TP: ", objName, " | Ticket: ", ticket);
+                        // Không xóa vùng Buy khỏi fvgZones
+                     }
+                     break;
+                  }
+               }
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Xóa vùng đã giao dịch (không dùng trong logic chính)              |
+//+------------------------------------------------------------------+
+void RemoveZone(string zoneName)
+{
+   for(int i = 0; i < ArraySize(fvgZones); i++)
+   {
+      if(fvgZones[i] == zoneName)
+      {
+         for(int j = i; j < ArraySize(fvgZones) - 1; j++)
+            fvgZones[j] = fvgZones[j + 1];
+         ArrayResize(fvgZones, ArraySize(fvgZones) - 1);
+         Print("Removed zone: ", zoneName);
+         break;
+      }
+   }
+}
+
+#include <Trade\Trade.mqh>
