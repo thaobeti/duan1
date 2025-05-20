@@ -1,0 +1,305 @@
+#property copyright "Your Name"
+#property link      "https://www.example.com"
+#property version   "1.07"
+
+#include <Trade\Trade.mqh>
+
+CTrade trade;
+
+input double LotSize = 0.01;
+input string SignalFile = "signals.txt";
+input int SL_Point = 1550; // StopLoss tính bằng point
+int TP_Point; // sẽ gán bằng 2 * SL_Point trong OnInit
+
+string last_line = "";
+
+// Định nghĩa hàm StringTrim cho MQL5
+string StringTrim(string &s) {
+    StringTrimRight(s);
+    StringTrimLeft(s);
+    return s;
+}
+
+ENUM_ORDER_TYPE_FILLING GetFillingMode(string symbol)
+{
+   long filling = SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
+   if((filling & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+      return ORDER_FILLING_FOK;
+   else if((filling & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
+      return ORDER_FILLING_IOC;
+   else
+      return ORDER_FILLING_RETURN;
+}
+
+// Đóng tất cả lệnh BUY hoặc SELL cho symbol hiện tại
+void CloseAllOrders(int type)
+{
+   int total = PositionsTotal();
+   for(int i=total-1; i>=0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket))
+      {
+         string pos_symbol = PositionGetString(POSITION_SYMBOL);
+         int pos_type = PositionGetInteger(POSITION_TYPE);
+         if(pos_symbol == Symbol() && pos_type == type)
+         {
+            if(trade.PositionClose(ticket))
+               Print("Đã đóng lệnh ", EnumToString((ENUM_POSITION_TYPE)type), " ticket: ", ticket);
+            else
+               Print("Đóng lệnh thất bại: ", ticket, " Lỗi: ", GetLastError());
+         }
+      }
+   }
+}
+
+int OnInit()
+{
+   TP_Point = 2 * SL_Point; // Thiết lập RR 1:2
+
+   if(!FileIsExist(SignalFile))
+   {
+      Print("File tín hiệu không tồn tại: ", SignalFile, ". Tạo file mới...");
+      int file_handle = FileOpen(SignalFile, FILE_WRITE | FILE_TXT);
+      if(file_handle != INVALID_HANDLE)
+      {
+         FileClose(file_handle);
+         Print("Đã tạo file tín hiệu: ", SignalFile);
+      }
+      else
+      {
+         int error_code = GetLastError();
+         Print("Không thể tạo file tín hiệu: ", SignalFile, ", Lỗi: ", error_code);
+         return(INIT_FAILED);
+      }
+   }
+   else
+   {
+      Print("File tín hiệu đã tồn tại: ", SignalFile);
+   }
+
+   if(!SymbolInfoDouble(Symbol(), SYMBOL_ASK))
+   {
+      Print("Symbol không hợp lệ hoặc không có giá: ", Symbol());
+      return(INIT_FAILED);
+   }
+
+   return(INIT_SUCCEEDED);
+}
+
+void OnTick()
+{
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
+   {
+      Print("Giao dịch không được phép. Vui lòng bật AutoTrading.");
+      return;
+   }
+
+   if(!TerminalInfoInteger(TERMINAL_CONNECTED))
+   {
+      Print("Không có kết nối với máy chủ. Vui lòng kiểm tra internet.");
+      return;
+   }
+
+   // Đọc tín hiệu
+   int file_handle = FileOpen(SignalFile, FILE_READ | FILE_TXT | FILE_ANSI | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   if(file_handle == INVALID_HANDLE)
+   {
+      Print("Không mở được file: ", SignalFile, ", Lỗi: ", GetLastError());
+      return;
+   }
+
+   string current_line = "";
+   while(!FileIsEnding(file_handle))
+   {
+      current_line = FileReadString(file_handle);
+   }
+   FileClose(file_handle);
+
+   if(current_line == last_line || current_line == "")
+   {
+      CheckAndMoveSL(); // Luôn kiểm tra dời SL nếu không có tín hiệu mới
+      return;
+   }
+
+   last_line = current_line;
+   Print("Đọc dòng mới: ", current_line);
+
+   string fields[];
+   int split_count = StringSplit(current_line, ',', fields);
+   if(split_count != 4)
+   {
+      Print("Định dạng không hợp lệ: Số trường = ", split_count);
+      CheckAndMoveSL();
+      return;
+   }
+
+   string action = fields[0];
+   string signal_symbol = fields[1];
+   double price = StringToDouble(fields[2]);
+   double timestamp = StringToDouble(fields[3]);
+
+   StringTrim(action);
+   StringToLower(action);
+   StringTrim(signal_symbol);
+
+   string chart_symbol = Symbol();
+   if(StringLen(signal_symbol) > 0 && StringFind(chart_symbol, signal_symbol) != 0)
+   {
+      Print("Symbol không khớp: ", signal_symbol, " != ", chart_symbol);
+      CheckAndMoveSL();
+      return;
+   }
+
+   // Lấy giá đóng cửa cây nến trước (giá tham chiếu)
+   double reference_price = iClose(chart_symbol, PERIOD_CURRENT, 1);
+
+   MqlTradeRequest request = {};
+   MqlTradeResult result = {};
+
+   if(action == "buy")
+   {
+      double sl = reference_price - SL_Point * _Point;
+      double tp = reference_price + TP_Point * _Point;
+
+      request.action = TRADE_ACTION_DEAL;
+      request.symbol = chart_symbol;
+      request.volume = LotSize;
+      request.type = ORDER_TYPE_BUY;
+      request.price = price > 0 ? price : SymbolInfoDouble(chart_symbol, SYMBOL_ASK);
+      request.sl = sl;
+      request.tp = tp;
+      request.type_filling = GetFillingMode(chart_symbol);
+      request.deviation = 10;
+      request.magic = 12345;
+      request.comment = "EA Trade";
+      Print("Gửi lệnh BUY, Volume: ", LotSize, ", SL: ", sl, ", TP: ", tp);
+
+      if(!OrderSend(request, result))
+      {
+         Print("OrderSend BUY thất bại: Retcode = ", result.retcode, ", Lỗi = ", GetLastError());
+         Print("Mô tả lỗi: ", GetTradeErrorDescription(result.retcode));
+      }
+      else
+      {
+         Print("Mở lệnh BUY thành công, Ticket: ", result.order);
+      }
+   }
+   else if(action == "sell")
+   {
+      double sl = reference_price + SL_Point * _Point;
+      double tp = reference_price - TP_Point * _Point;
+
+      request.action = TRADE_ACTION_DEAL;
+      request.symbol = chart_symbol;
+      request.volume = LotSize;
+      request.type = ORDER_TYPE_SELL;
+      request.price = price > 0 ? price : SymbolInfoDouble(chart_symbol, SYMBOL_BID);
+      request.sl = sl;
+      request.tp = tp;
+      request.type_filling = GetFillingMode(chart_symbol);
+      request.deviation = 10;
+      request.magic = 12345;
+      request.comment = "EA Trade";
+      Print("Gửi lệnh SELL, Volume: ", LotSize, ", SL: ", sl, ", TP: ", tp);
+
+      if(!OrderSend(request, result))
+      {
+         Print("OrderSend SELL thất bại: Retcode = ", result.retcode, ", Lỗi = ", GetLastError());
+         Print("Mô tả lỗi: ", GetTradeErrorDescription(result.retcode));
+      }
+      else
+      {
+         Print("Mở lệnh SELL thành công, Ticket: ", result.order);
+      }
+   }
+   else if(action == "exit buy" || action == "exit_buy")
+   {
+      Print("Nhận tín hiệu EXIT BUY. Đang đóng tất cả lệnh BUY.");
+      CloseAllOrders(POSITION_TYPE_BUY);
+   }
+   else if(action == "exit sell" || action == "exit_sell")
+   {
+      Print("Nhận tín hiệu EXIT SELL. Đang đóng tất cả lệnh SELL.");
+      CloseAllOrders(POSITION_TYPE_SELL);
+   }
+   else
+   {
+      Print("Hành động không hợp lệ hoặc chưa hỗ trợ: ", action);
+   }
+
+   // Sau khi xử lý tín hiệu, vẫn kiểm tra dời SL
+   CheckAndMoveSL();
+}
+
+// Hàm kiểm tra và dời SL về reference_price khi đạt RR 1:1
+void CheckAndMoveSL()
+{
+    int total = PositionsTotal();
+    for(int i=0; i<total; i++)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(PositionSelectByTicket(ticket))
+        {
+            string pos_symbol = PositionGetString(POSITION_SYMBOL);
+            int pos_type = PositionGetInteger(POSITION_TYPE);
+            double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
+            double sl = PositionGetDouble(POSITION_SL);
+            double tp = PositionGetDouble(POSITION_TP);
+
+            // Chỉ xử lý cho symbol hiện tại
+            if(pos_symbol == Symbol())
+            {
+                double current_price = (pos_type == POSITION_TYPE_BUY) ? SymbolInfoDouble(Symbol(), SYMBOL_BID)
+                                                                        : SymbolInfoDouble(Symbol(), SYMBOL_ASK);
+                double reference_price = iClose(Symbol(), PERIOD_CURRENT, 1);
+
+                // RR 1:1
+                double rr1_distance = SL_Point * _Point;
+
+                if(pos_type == POSITION_TYPE_BUY)
+                {
+                    // Nếu giá đã tăng >= SL_Point (RR 1:1) và SL chưa dời về reference_price
+                    if((current_price - open_price) >= rr1_distance && MathAbs(sl - reference_price) > _Point)
+                    {
+                        if(trade.PositionModify(ticket, reference_price, tp))
+                            Print("Dời SL BUY về reference_price: ", reference_price);
+                        else
+                            Print("Dời SL BUY thất bại: ", GetLastError());
+                    }
+                }
+                else if(pos_type == POSITION_TYPE_SELL)
+                {
+                    // Nếu giá đã giảm >= SL_Point (RR 1:1) và SL chưa dời về reference_price
+                    if((open_price - current_price) >= rr1_distance && MathAbs(sl - reference_price) > _Point)
+                    {
+                        if(trade.PositionModify(ticket, reference_price, tp))
+                            Print("Dời SL SELL về reference_price: ", reference_price);
+                        else
+                            Print("Dời SL SELL thất bại: ", GetLastError());
+                    }
+                }
+            }
+        }
+    }
+}
+
+string GetTradeErrorDescription(int error_code)
+{
+   switch(error_code)
+   {
+      case 10004: return "Requote";
+      case 10006: return "Yêu cầu bị từ chối";
+      case 10007: return "Yêu cầu bị hủy bởi trader";
+      case 10013: return "Giao dịch bị vô hiệu hóa";
+      case 10014: return "Khối lượng không hợp lệ";
+      case 10015: return "Giá không hợp lệ";
+      case 10017: return "Giao dịch bị tắt";
+      case 10018: return "Thị trường đóng cửa";
+      case 10019: return "Không đủ tiền";
+      case 10026: return "Giao dịch tự động bị tắt bởi máy chủ";
+      case 10027: return "Giao dịch tự động bị tắt bởi terminal";
+      case 10031: return "Không kết nối với máy chủ giao dịch";
+      default: return "Lỗi không xác định";
+   }
+}
