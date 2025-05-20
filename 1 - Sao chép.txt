@@ -12,7 +12,6 @@ SIGNAL_FILE = r"C:\Users\DELL\AppData\Roaming\MetaQuotes\Terminal\53785E099C927D
 def extract_signal(text):
     """Trích xuất và chuẩn hóa tín hiệu từ nội dung email."""
     text_upper = text.upper()
-    # Kiểm tra EXIT trước BUY/SELL
     valid_signals = ["EXIT BUY", "EXIT SELL", "BUY", "SELL"]
     for signal in valid_signals:
         if signal in text_upper:
@@ -20,52 +19,54 @@ def extract_signal(text):
     return None
 
 def parse_signal_from_body(body):
-    # Nếu body đã đúng định dạng: action,symbol,price,timestamp
+    print(f"Đang phân tích nội dung email: {body}")
     parts = [p.strip() for p in body.replace("\n", "").split(",")]
     if len(parts) == 4:
-        # Đã đủ thông tin: action,symbol,price,timestamp
         return ",".join(parts)
-    # Nếu chỉ có action (ví dụ: "EXIT BUY")
     action = extract_signal(body)
     if not action:
         return None
-    # Nếu không có symbol, lấy mặc định hoặc yêu cầu user truyền vào alert message!
-    # Có thể hardcode lại cho tạm, nhưng sẽ sai nếu trade nhiều symbol
-    symbol = "XAUUSD" # hoặc EURUSD, hoặc đọc từ cấu hình
+    symbol = "XAUUSD"
     price = "0"
     timestamp = str(int(time.time()))
     return f"{action},{symbol},{price},{timestamp}"
 
 def extract_signal_from_email():
     try:
+        print("Đang kết nối tới Gmail...")
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
         mail.login(GMAIL_USER, GMAIL_PASSWORD)
         mail.select("inbox")
 
+        print("Đang tìm email chưa đọc...")
         status, messages = mail.search(None, '(UNSEEN FROM "noreply@tradingview.com")')
+        print(f"Kết quả tìm kiếm email: {status}, {messages}")
+
         if status != "OK" or not messages[0]:
-            print("Không có email mới từ TradingView")
+            print("Không có email mới từ TradingView.")
             return None
 
-        message_ids = messages[0].split()
-        latest_email_id = message_ids[-1]
-        status, msg_data = mail.fetch(latest_email_id, "(RFC822)")
-        email_message = email.message_from_bytes(msg_data[0][1])
-
         signal_line = None
-        if email_message.is_multipart():
-            for part in email_message.walk():
-                if part.get_content_type() == "text/plain":
-                    body = part.get_payload(decode=True).decode('utf-8', errors='ignore').strip()
-                    signal_line = parse_signal_from_body(body)
-                    break
-        else:
-            body = email_message.get_payload(decode=True).decode('utf-8', errors='ignore').strip()
-            signal_line = parse_signal_from_body(body)
+        for email_id in messages[0].split():
+            status, msg_data = mail.fetch(email_id, "(RFC822)")
+            email_message = email.message_from_bytes(msg_data[0][1])
+            if email_message.is_multipart():
+                for part in email_message.walk():
+                    if part.get_content_type() == "text/plain":
+                        body = part.get_payload(decode=True).decode('utf-8', errors='ignore').strip()
+                        print(f"Nội dung email: {body}")
+                        signal_line = parse_signal_from_body(body)
+                        break
+            else:
+                body = email_message.get_payload(decode=True).decode('utf-8', errors='ignore').strip()
+                print(f"Nội dung email: {body}")
+                signal_line = parse_signal_from_body(body)
 
-        mail.store(latest_email_id, "+FLAGS", "\\Seen")
+            mail.store(email_id, "+FLAGS", "\\Seen")
+            if signal_line:
+                break
+
         mail.logout()
-
         return signal_line
 
     except Exception as e:
@@ -74,12 +75,19 @@ def extract_signal_from_email():
 
 def main():
     while True:
+        print("Đang kiểm tra email...")
         signal_line = extract_signal_from_email()
         if signal_line:
+            print(f"Tín hiệu nhận được: {signal_line}")
             with open(SIGNAL_FILE, "w", encoding='utf-8') as file:
                 file.write(signal_line)
-            print(f"Tín hiệu '{signal_line}' đã được ghi vào {SIGNAL_FILE}")
-        time.sleep(1)
+            print(f"Tín hiệu '{signal_line}' đã được ghi vào file.")
+        else:
+            print("Không có tín hiệu nào.")
+        time.sleep(0.3)
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"Chương trình gặp lỗi: {e}")
