@@ -1,0 +1,73 @@
+//@version=4
+study("ThaoBeti Indicator", overlay=true)
+
+// Inputs
+rsiL = input(14, title="RSI Length")
+len1 = input(70, minval=1, title="UpLevel")
+len2 = input(30, minval=1, title="DownLevel")
+// SL và TP cố định
+slPercent = 0.05
+tpPercent = 5.01
+
+// EMA 50
+ema50 = ema(close, 50)
+
+// RSI Coloring (dựa trên nến vàng và tím)
+src = close
+len = input(7, minval=1, title="Length")
+up = rma(max(change(src), 0), len)
+down = rma(-min(change(src), 0), len)
+rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+isup() => rsi > len1  // Nến vàng (orange) - Buy
+isdown() => rsi < len2  // Nến tím (purple) - Sell
+
+// Biến để theo dõi trạng thái
+var bool canBuy = true
+var bool canSell = false
+
+// Điều kiện Buy và Sell
+buySignal = isup() and close > ema50 and canBuy
+sellSignal = isdown() and close < ema50 and canSell
+
+// Biến để theo dõi thoát lệnh
+var bool exitBuySignal = false
+var bool exitSellSignal = false
+
+// Logic tín hiệu (không còn strategy)
+if (buySignal)
+    // Tính giá SL và TP
+    entryPrice = close
+    stopLossPrice = entryPrice * (1 - slPercent / 100)
+    takeProfitPrice = entryPrice * (1 + tpPercent / 100)
+    profitValue = takeProfitPrice - entryPrice
+    // Vẽ nhãn BUY
+    label.new(bar_index, low, "BUY", yloc=yloc.belowbar, color=color.orange, textcolor=color.white, style=label.style_label_up)
+    canBuy := false
+    canSell := true
+
+if (sellSignal)
+    entryPrice = close
+    stopLossPrice = entryPrice * (1 + slPercent / 100)
+    takeProfitPrice = entryPrice * (1 - tpPercent / 100)
+    profitValue = entryPrice - takeProfitPrice
+    // Vẽ nhãn SELL
+    label.new(bar_index, high, "SELL", yloc=yloc.abovebar, color=color.purple, textcolor=color.white, style=label.style_label_down)
+    canSell := false
+    canBuy := true
+
+// Phát hiện thoát lệnh (giữ nguyên biến nhưng không còn strategy)
+exitBuySignal := false
+exitSellSignal := false
+
+// Tô màu nến
+barcolor(isup() ? color.orange : isdown() ? color.purple : na)
+
+// Vẽ EMA 50
+plot(ema50, title="EMA 50", color=color.blue, linewidth=2)
+
+// Tổng hợp tín hiệu vào một biến
+signal = buySignal ? "BUY" : sellSignal ? "SELL" : exitBuySignal ? "EXIT BUY" : exitSellSignal ? "EXIT SELL" : ""
+
+// Kích hoạt thông báo khi có tín hiệu
+if signal != ""
+    alert(signal, alert.freq_once_per_bar_close)
