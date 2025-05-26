@@ -1,0 +1,460 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © thaobetii
+
+//@version=5
+indicator("SMC Trading Hub 3.0", "SMC Structure Mapping", true, 
+ max_bars_back = 5000, max_labels_count = 500, max_lines_count = 500)
+var bool mnUp = na
+var bool mnDn = na
+float mnStrc = na
+var top = high
+var bot = low
+var puUp = high
+var puDn = low
+var L = low
+var H = high
+var idmB = low
+var idmS = high
+var lastH = high
+var lastL = low
+var lastHH = high
+var lastLL = low
+//bar indexes
+var int puUpbar = na
+var int puDnbar = na
+var int idmB_bar = na
+var int idmS_bar = na
+var int Hbar = bar_index
+var int Lbar = bar_index
+var int lastHbar = bar_index
+var int lastLbar = bar_index
+var int lastHHbar = bar_index
+var int lastLLbar = bar_index
+
+lastHL = math.max(Hbar, Lbar)
+var bool isBosUp = 0
+var bool isBosDn = 0
+var bool isCocUp = 1
+var bool isCocDn = 1
+
+color transp = color.new(color.white,100)
+equalHL = input.bool(0,"Use equal H/L", "To calculate valid pullbacks and minor structure", group = "Calculation method")
+showHL = input.bool(1, "Mark H/L", group = "H/L marking options")
+HLcolor = input.color(color.rgb(110, 110, 110), "H/L color", group = "H/L marking options")
+
+showMn = input.bool(0, "Mark out internal structure", group = "Internal structue")
+puUpco = input.color(color.red  , "High pivots", inline = "mnco", group = "Internal structue")
+puDnco = input.color(color.green, "Low pivots" , inline = "mnco", group = "Internal structue")
+
+showBC = input.bool(1, "Mark BoS/ChoCH", group = "BoS/Choch")
+bull = input.color(color.green, "Bull color", inline = "BSclor" ,group = "BoS/Choch")
+bear = input.color(color.red  , "Bear color", inline = "BSclor" ,group = "BoS/Choch")
+
+showbarcolor = input.bool(0,"Bar color", group = "Bar color")
+showSCOB = input.bool(1, "Show SCOB pattern", group = "Bar color")
+scobUp = input.color(color.aqua   , "Bullish SCOB", inline = "scob" , group = "Bar color")
+scobDn = input.color(color.fuchsia, "Bearish SCOB", inline = "scob" , group = "Bar color")
+
+showIDM = input.bool(1,"Mark previous IDM", group = "IDM")
+showliveIDM = input.bool(1,"Mark live IDM", group = "IDM")
+idmColor = input.color(color.rgb(114, 113, 113), "IDM color", group = "IDM")
+var label lv_lbl = na
+var line lv_line = na
+
+showSw = input.bool(1, "Show H/L sweeping lines", group = "H/L sweeps")
+markX = input.bool(1, 'Mark "X"', group = "H/L sweeps")
+swColor  = input.color(color.rgb(128, 128, 128), "Sweeping line color", group = "H/L sweeps")
+
+maxlen = bar_index - 500
+
+mnMark(bool UD) =>
+    if showMn 
+        label.new(
+         x = UD ? puUpbar : puDnbar,
+         y = UD ? puUp : puDn,
+         yloc = UD ? yloc.abovebar : yloc.belowbar,
+         text = "",
+         color = UD ? puUpco : puDnco,
+         style = UD ? label.style_arrowdown : label.style_arrowup,
+         size = size.tiny
+         )
+
+BoS_ChoCh(bool B_C, bool UpDn) =>
+    [HLbarid, BCprc, BCcolor, BCtxt, BCstyle] = switch
+        B_C == 1 and UpDn == 1 => [lastHHbar, lastHH, bull, "BoS"  , label.style_label_down]
+        B_C == 0 and UpDn == 1 => [lastHbar , lastH , bull, "ChoCh", label.style_label_down]
+        B_C == 0 and UpDn == 0 => [lastLbar , lastL , bear, "ChoCh", label.style_label_up  ]
+        B_C == 1 and UpDn == 0 => [lastLLbar, lastLL, bear, "BoS"  , label.style_label_up  ]
+    HLbarid := HLbarid < maxlen ? maxlen : HLbarid
+    if showBC
+        line.new(HLbarid, BCprc, bar_index, BCprc, color = BCcolor, style = line.style_dashed)
+        label.new(
+         int( math.avg(bar_index,HLbarid) ), BCprc
+          ,BCtxt
+          ,color = transp
+          ,style = BCstyle
+          ,textcolor = BCcolor
+          )
+
+cfHL(bool ifHL) =>
+    [ifHLbarid, HLprc] = switch
+        ifHL => 
+            if high > H
+                [bar_index, high]
+            else
+                [Hbar, H]
+        =>
+            if low < L
+                [bar_index, low]
+            else
+                [Lbar, L]
+    ifHL_txt = if ifHL
+        if H == lastHH
+            "HH"
+        else
+            "LH"
+    else
+        if L == lastLL
+            "LL"
+        else
+            "HL"
+    cfHLStyle = ifHL ? label.style_label_down : label.style_label_up
+    if showHL
+        label.new(ifHLbarid,HLprc,ifHL_txt, color = transp, textcolor = HLcolor, style = cfHLStyle)
+
+sweep(bool swHL, bool swHrLr) =>
+    swStyle = swHL ? label.style_label_down : label.style_label_up
+    [swHLbarid, swprc, swHL_txt] = switch
+        swHL == 1 and swHrLr == 1 => [lastHHbar, lastHH, "HH"]
+        swHL == 1 and swHrLr == 0 => [lastHbar , lastH , "LH"]
+        swHL == 0 and swHrLr == 1 => [lastLbar , lastL , "HL"]
+        swHL == 0 and swHrLr == 0 => [lastLLbar, lastLL, "LL"]
+    swHLbarid := swHLbarid < maxlen ? maxlen : swHLbarid
+    if showSw
+        line.new(swHLbarid,swprc,bar_index,swprc,color = swColor,style = line.style_dotted)
+        if markX
+            label.new(int(math.avg(bar_index,swHLbarid)),swprc, "X", color = transp, textcolor = swColor, style = swStyle, size = size.small)
+
+IDM(bool BS) =>
+    IDMid = BS ? idmB_bar : idmS_bar
+    idmprc = BS ? idmB : idmS
+    idmStyle = BS ? label.style_label_up : label.style_label_down
+    IDMid := IDMid < maxlen ? maxlen : IDMid
+    if showIDM
+        line.new(IDMid,idmprc,bar_index,idmprc,color = idmColor,style = line.style_dotted)
+        label.new(int(math.avg(bar_index,IDMid)),idmprc, "IDM", color = transp, textcolor = idmColor, style = idmStyle,size = size.small)
+        
+//Bar color
+ba_color = if showSCOB
+    if low[1] == puDn and low >= low[1] and close > high[1] and close[1] > low[2]
+        scobUp
+    else if high[1] == puUp and high <= high[1] and close < low[1] and close[1] < high[2]
+        scobDn
+    else if showbarcolor
+        isCocUp?bull:bear
+    else
+        na
+barcolor(ba_color,-1)
+if (high > H or (high == H and equalHL)) and low > idmB
+    if low <= puDn
+        idmB := low
+        idmB_bar := bar_index
+    else
+        idmB := puDn
+        idmB_bar := puDnbar
+if (low < L or (low == L and equalHL)) and high < idmS
+    if high >= puUp
+        idmS := high
+        idmS_bar := bar_index
+    else
+        idmS := puUp
+        idmS_bar := puUpbar
+
+//Check for IDM and ChoCh
+if isCocUp and lastHL != Lbar
+    if low < idmB
+        if idmB != lastL
+            IDM(1)
+        isBosUp := 0
+        lastH := H
+        lastHbar := Hbar
+        lastHH := H
+        lastHHbar := Hbar
+        cfHL(1)
+        L := low
+        Lbar := bar_index
+else if lastH != lastHH and high > lastH
+    cfHL(0)
+    isCocDn := 0
+    isBosDn := 0
+    if close > lastH
+        BoS_ChoCh(0,1)
+        isCocUp := 1
+    else
+        sweep(1,0)
+
+if isCocDn and lastHL != Hbar
+    if high > idmS
+        if idmS != lastH
+            IDM(0)
+        isBosDn := 0
+        lastL := L
+        lastLbar := Lbar
+        lastLL := L
+        lastLLbar := Lbar
+        cfHL(0)
+        H := high
+        Hbar := bar_index
+else if low < lastL and lastL != lastLL
+    if close < lastL
+        BoS_ChoCh(0,0)
+        cfHL(1)
+        isCocDn := 1
+        isCocUp := 0
+        isBosUp := 0
+    else
+        sweep(0,1)
+if isBosUp == 0
+    if high > lastHH
+        if close > lastHH
+            BoS_ChoCh(1,1)
+            cfHL(0)
+            lastL := L
+            lastLbar := Lbar
+            isCocUp := 1
+            isBosUp := 1
+            isCocDn := 0
+            isBosDn := 0
+        else
+            sweep(1,1)
+if isBosDn == 0
+    if low < lastLL
+        if close < lastLL
+            BoS_ChoCh(1,0)
+            cfHL(1)
+            lastH := H
+            lastHbar := Hbar
+            isCocUp := 0
+            isBosUp := 0
+            isCocDn := 1
+            isBosDn := 1
+        else
+            sweep(0,0)
+if equalHL
+    if high >= top        
+        if low > bot
+            mnDn :=0
+        mnUp := 1
+    if low <= bot
+        if high < top
+            mnUp := 0
+        mnDn := 1
+    if mnUp[1] and not mnUp
+        mnMark(1)
+    if mnDn[1] and not mnDn
+        mnMark(0)
+else
+    if high > top        
+        if low > bot
+            mnDn :=0
+        mnUp := 1
+    if low < bot
+        if high < top
+            mnUp := 0
+        mnDn := 1
+    if mnUp[1] and not mnUp
+        mnMark(1)
+    if mnDn[1] and not mnDn
+        mnMark(0)
+
+if equalHL
+    if high >= top
+        puUp := high
+        puUpbar := bar_index
+    if low <= bot
+        puDn := low
+        puDnbar := bar_index
+        top := high
+        bot := low
+    if high >= top
+        top := high
+        bot := low
+else
+    if high > top
+        puUp := high
+        puUpbar := bar_index
+    if low < bot
+        puDn := low
+        puDnbar := bar_index
+        top := high
+        bot := low
+    if high > top
+        top := high
+        bot := low        
+if high > H or (high == H and equalHL)
+    H := high
+    Hbar := bar_index
+if high > idmS 
+    idmS := high
+    idmS_bar := bar_index
+if high > lastH or (high == lastH and equalHL)
+    lastH := high
+    lastHbar := bar_index
+if high > lastHH or (high == lastHH and equalHL)
+    lastHH := high
+    lastHHbar := bar_index
+
+if low < L or (low == L and equalHL)
+    L := low
+    Lbar := bar_index
+if low < idmB
+    idmB := low
+    idmB_bar := bar_index
+if low < lastL or (low == lastL and equalHL)
+    lastL := low
+    lastLbar := bar_index
+if low < lastLL or (low == lastLL and equalHL)
+    lastLL := low
+    lastLLbar := bar_index
+
+if showliveIDM and barstate.islast
+    [liveIDM, liveIDMbar] = if isCocUp and lastHL == Hbar
+        [idmB, idmB_bar]
+    else if isCocDn and lastHL == Lbar
+        [idmS, idmS_bar]
+    lv_line := line.new(liveIDMbar, liveIDM, bar_index + 20, liveIDM, color = idmColor, style = line.style_dotted),
+    lv_lbl := label.new(bar_index + 20, liveIDM, "IDM", color = transp, textcolor = idmColor, style = isCocUp ? label.style_label_down : label.style_label_up, size = size.small)
+else
+    lv_line := na
+    lv_lbl := na
+line.delete(lv_line[1])
+label.delete(lv_lbl[1])
+
+string HTF_Period = input.timeframe(title="Higher Timeframe", defval="1D")
+
+PrevBars = input.bool(title = "Show previous highs and lows?", defval=false)
+condition = not(timeframe.isweekly or timeframe.ismonthly) 
+
+marketHTF = barstate.isrealtime ? 1 : 0
+marketCTF = barstate.isrealtime ? 0 : 1
+float Prev_High = request.security(syminfo.tickerid, HTF_Period, high[marketHTF])[marketCTF]
+float Prev_Low  = request.security(syminfo.tickerid, HTF_Period, low[marketHTF])[marketCTF]
+newSession = ta.change(time(HTF_Period))
+var barsThisSession = 0
+var barsLastSession = 0
+if not newSession
+    barsThisSession := barsThisSession + 1
+else
+    barsLastSession := barsThisSession + 1
+    barsThisSession := 0
+
+int barsTotalHTF = barsThisSession + barsLastSession
+barCountSinceHigh = 0
+for i = barsTotalHTF to 0
+    if high[i] == Prev_High
+        barCountSinceHigh := i
+        break
+
+barCountSinceLow = 0
+for i = barsTotalHTF to 0
+    if low[i] == Prev_Low
+        barCountSinceLow := i
+        break
+
+count = ta.barssince(newSession)
+
+var line PrevHigh = na
+var line PrevLow = na
+
+var label PDHLabel = na
+var label PDLLabel = na
+
+if (newSession)
+    PrevHigh := line.new(x1=bar_index, y1=Prev_High,
+                 x2=bar_index, y2=Prev_High, color=#0E6720,width=1)
+    PrevLow  := line.new(x1=bar_index,y1=Prev_Low,
+                 x2=bar_index,y2=Prev_Low,color=#AF0D26,width = 1)
+    line.delete(id = PrevHigh[1])
+    line.delete(id = PrevLow[1]) 
+    
+    PDHLabel := label.new(bar_index[barCountSinceHigh], high[barCountSinceHigh],
+                 "PDH", style = label.style_none, textcolor=#0E6720)
+    label.delete(id = PDHLabel[1])
+
+    PDLLabel := label.new(bar_index[barCountSinceLow], low[barCountSinceLow],
+                 "PDL", style = label.style_none, textcolor=#980e8d)
+    label.delete(id = PDLLabel[1])
+
+if (not barstate.islast)
+    line.set_x2(id= PrevHigh, x=bar_index)
+    line.set_x2(id= PrevLow, x=bar_index)
+else
+    line.set_xloc(id=PrevHigh, x1=time[barCountSinceHigh ],
+         x2=time_close + (1 * 86400000), xloc=xloc.bar_time)
+    line.set_xloc(id=PrevLow, x1=time[barCountSinceLow ],
+         x2=time_close + (1 * 86400000), xloc=xloc.bar_time)
+
+    label.set_xloc(id=PDHLabel, x=time_close + (1* 86400000), xloc=xloc.bar_time)
+    label.set_xloc(id=PDLLabel, x=time_close + (1* 86400000), xloc=xloc.bar_time)
+//-----------------------------------------------------------------------------
+var table logo =  table.new(position.bottom_right,2,8, frame_color=color.gray,frame_width=0, border_color=color.gray, border_width=0)
+table.cell(logo,0,0,"Le Xuan Thao",text_color=color.rgb(201, 201, 201),width=0)  
+//-----------------------------------------------------------------------------
+numDays = input.int(7, "number of days lookback")
+showUP = input.bool(true, "'UP' FVGs:", inline ='1')
+colUp = input.color(color.new(color.blue, 86), "", inline ='1')
+showDN = input.bool(true, "'DOWN' FVGs:", inline ='2')
+colDn = input.color(color.new(color.orange, 86), "", inline ='2')
+showCE = input.bool(false, "show CE", inline ='3')
+ceCol = input.color(color.new(color.black, 1), "| color:", inline ='3')
+ceStyle = input.string(line.style_dotted, "| style:", options=[line.style_dotted,line.style_solid,  line.style_dashed], inline ='3')
+deleteFilledBoxes = input.bool(true, "delete filled boxes & lines")
+CEcond = input.bool (true, "Use CE (as opposed to Full Fill)", group = 'conditions/alerts', tooltip = "If toggled OFF, FVGs and CEs will paint until FVG has been completely filled.\n\nThis threshold is used for Above/Below threshold Alert conditions too (but does not effect the IOFED alerts):\ni.e. this will determine if your 'ABOVE threshold' alert fires when price hits most recent FVG CE ABOVE or most recent FVG Full Fill ABOVE\n\nAlerts are set by clicking the three dots on the indicator display line.")
+colorNone = color.new(color.white, 100)
+_day = 24*3600*1000
+var box bxUp = na, var box bxDn = na, var line lnUp = na, var line lnDn = na
+var array<box> bxUpArr = array.new<box>(0), var array<line> lnUpArr = array.new<line>(0)
+var array<box> bxDnArr = array.new<box>(0), var array<line> lnDnArr = array.new<line>(0)
+dnCE = high[1] + (low[3]-high[1])/2
+upCE = low[1] - (low[1]-high[3])/2
+if low[3] > high[1] and time> timenow- numDays*_day and showDN
+    bxDnArr.push(box.new(bar_index-3, low[3], bar_index, high[1], bgcolor = colDn, border_color = colorNone))
+    lnDnArr.push(line.new(bar_index-3, dnCE, bar_index, dnCE, color = showCE?ceCol:colorNone, style =ceStyle))
+if high[3] < low[1] and time> timenow- numDays*_day and showUP
+    bxUpArr.push(box.new(bar_index-3, low[1], bar_index, high[3], bgcolor = colUp, border_color = colorNone))
+    lnUpArr.push(line.new(bar_index-3, upCE, bar_index, upCE, color = showCE?ceCol:colorNone, style =ceStyle))
+var array<int> _countArr =array.new<int>(0)
+var array<int> _countArrIOFED =array.new<int>(0)
+extendAndRemoveBx(array<box> boxArray, array<line> lineArray, array<int> countArr1, array<int> countArr2, simple bool isBull, int maxSize) => 
+    if boxArray.size() > 0
+        for i = boxArray.size() -1 to 0
+            line ln = lineArray.get(i)
+            box bx = boxArray.get(i)
+            bx.set_right(bar_index)
+            ln.set_x2(bar_index)
+            float price = CEcond?ln.get_price(bar_index):(isBull?bx.get_top():bx.get_bottom())    
+            float price_IOFED = isBull?bx.get_bottom():bx.get_top()          
+            int m = isBull ? 1 : -1
+            float hiLo = isBull ? high : low  
+            if hiLo * m > price * m 
+                boxArray.remove(i)
+                lineArray.remove(i)
+                countArr1.push(isBull?1:-1) //for 'above/below threshold alerts; counter sum will decrement 1 on lower threshold hit, increment 1 on upper threshold hit
+                if deleteFilledBoxes
+                    bx.set_bgcolor(colorNone)
+                    ln.set_color(colorNone)
+            if hiLo*m>price_IOFED*m
+                countArr2.push(isBull?1:-1)
+    if boxArray.size() > maxSize
+        box.delete(boxArray.shift())
+        line.delete(lineArray.shift())
+extendAndRemoveBx(bxDnArr,lnDnArr,_countArr,_countArrIOFED, true, 12) //12 should be good for around 2200 bars of history
+extendAndRemoveBx(bxUpArr, lnUpArr,_countArr,_countArrIOFED, false, 12)
+upThresholdLst = array.sum(_countArr)>array.sum(_countArr)[1]
+dnThresholdLst = array.sum(_countArr)<array.sum(_countArr)[1]
+upIOFEDlast= array.sum(_countArrIOFED)>array.sum(_countArrIOFED)[1]
+dnIOFEDlast= array.sum(_countArrIOFED)<array.sum(_countArrIOFED)[1]
+alertcondition(upThresholdLst, "ABOVE threshold (CE or fvg High)", "UP threshold hit")
+alertcondition(dnThresholdLst, "BELOW threshold (CE or fvg low)", "DOWN threshold hit")
+alertcondition(upIOFEDlast, "IOFED up", "price entered FVG above")
+alertcondition(dnIOFEDlast, "IOFED down", "price entered FVG below")
